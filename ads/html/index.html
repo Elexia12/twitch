@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <!-- Got implementation from: marinsborg.com-->
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="../js/pokemonad.js" defer></script>
+    <link rel="stylesheet" href="../css/pokemonad.css">
+    <title>Quien es ese Pokemon?!</title>
+</head>
+<body>
+    <video autoplay muted loop id="vidBackground">
+        <source src="../misc/quien_es_ese_pokemon.mp4" type="video/mp4">
+    </video>
+    <div class="row">
+        <div class="column">
+            <img id="sprite">
+            <input type="text" placeholder="Who's that Pokemon?" id="guess">
+            <br>
+            <span id="streak" hidden>Streak: 0</span>
+        </div>
+    <div class="column">
+      <div>
+            <span id="pokemon-name"></span>
+      </div>
+    </div>
+    </div>
+    <div id="footer">
+        <p>
+            <a href="https://www.marinsborg.com/simple-pokemon-guessing-game-javascript">
+            Created by Marinsborg.com - Learn how to create this game here
+            </a>
+        </p>
+    </div>
+</body>
+</html>
