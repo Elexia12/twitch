@@ -3,11 +3,13 @@ import os
 import torch
 from twitchio.ext import commands
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from dotenv import load_dotenv
 
-# --- Twitch credentials ---
-TWITCH_TOKEN = "oauth:k16s1986105wfukkhx4mq9pcrh9t3d"
-TWITCH_NICK = "Ele_GPT"
-TWITCH_CHANNEL = "ElexiaCR"
+# --- Load environment variables ---
+load_dotenv()
+TWITCH_TOKEN = os.getenv("TWITCH_TOKEN")
+TWITCH_NICK = os.getenv("TWITCH_NICK")
+TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL")
 
 # --- Load DialoGPT model ---
 print("Loading DialoGPT model...")
@@ -26,23 +28,36 @@ class Bot(commands.Bot):
         print(f"Bot {TWITCH_NICK} is online in {TWITCH_CHANNEL}'s chat!")
 
     async def event_message(self, message):
-        # Avoid replying to itself
         if message.author.name.lower() == TWITCH_NICK.lower():
-            return
+            return  # ignore itself
 
-        print(f"{message.author.name}: {message.content}")
+        content = message.content.strip()
+
+        # Check if it's an @mention or a command
+        mentioned = f"@{TWITCH_NICK.lower()}" in content.lower()
+        is_command = content.lower().startswith("!askbot")
+
+        if not (mentioned or is_command):
+            return  # ignore everything else
+
+        print(f"{message.author.name} triggered the bot: {content}")
+
+        # Clean up input (remove mention or command)
+        clean_text = content
+        clean_text = clean_text.replace(f"@{TWITCH_NICK}", "").strip()
+        if is_command:
+            clean_text = clean_text[len("!askbot"):].strip()
 
         # Encode user input
-        input_ids = tokenizer.encode(message.content + tokenizer.eos_token, return_tensors="pt")
+        input_ids = tokenizer.encode(clean_text + tokenizer.eos_token, return_tensors="pt")
 
-        # Append chat history (so bot "remembers" a bit)
         global chat_history
         if chat_history:
             bot_input_ids = torch.cat([chat_history, input_ids], dim=-1)
         else:
             bot_input_ids = input_ids
 
-        # Generate a reply
+        # Generate reply
         output_ids = model.generate(
             bot_input_ids,
             max_length=200,
@@ -53,13 +68,12 @@ class Bot(commands.Bot):
             temperature=0.8
         )
 
-        chat_history = output_ids  # save history
+        chat_history = output_ids
         reply = tokenizer.decode(output_ids[:, bot_input_ids.shape[-1]:][0], skip_special_tokens=True)
 
-        # Send reply
+        # Reply to user
         await message.channel.send(f"@{message.author.name} {reply}")
 
-# --- Run bot ---
 if __name__ == "__main__":
     bot = Bot()
     bot.run()
