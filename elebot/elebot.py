@@ -5,9 +5,9 @@ from twitchio.ext import commands
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 # --- Twitch credentials ---
-TWITCH_TOKEN = "oauth:your_twitch_oauth_token_here"
-TWITCH_NICK = "your_bot_username"
-TWITCH_CHANNEL = "your_channel_name"
+TWITCH_TOKEN = "oauth:k16s1986105wfukkhx4mq9pcrh9t3d"
+TWITCH_NICK = "Ele_GPT"
+TWITCH_CHANNEL = "ElexiaCR"
 
 # --- Load DialoGPT model ---
 print("Loading DialoGPT model...")
