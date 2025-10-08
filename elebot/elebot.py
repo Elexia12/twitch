@@ -1,78 +1,150 @@
-# bot_local.py
-import os
-import torch
+import sys, os
+import time
+import logging
 from twitchio.ext import commands
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from openai import OpenAI, APIError, RateLimitError, APITimeoutError
 from dotenv import load_dotenv
+from datetime import datetime
+from collections import defaultdict, deque
 
-# --- Load environment variables ---
+logging.basicConfig(level=logging.DEBUG)
 load_dotenv()
+
+# ---------------- CONFIG ----------------
 TWITCH_TOKEN = os.getenv("TWITCH_TOKEN")
-TWITCH_NICK = os.getenv("TWITCH_NICK")
-TWITCH_CHANNEL = os.getenv("TWITCH_CHANNEL")
+CHANNEL = os.getenv("TWITCH_CHANNEL")  # lowercase
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+PREFIX = "!"
+MAX_MEMORY = 5  # how many past exchanges to keep per channel
+# ----------------------------------------
 
-# --- Load DialoGPT model ---
-print("Loading DialoGPT model...")
-tokenizer = AutoTokenizer.from_pretrained("microsoft/DialoGPT-medium")
-model = AutoModelForCausalLM.from_pretrained("microsoft/DialoGPT-medium")
+# Init OpenAI
+client = OpenAI(api_key=OPENAI_API_KEY)
 
-# Keep track of conversation history
-chat_history = []
+# Conversation history per channel (short-term memory)
+memory = defaultdict(lambda: deque(maxlen=MAX_MEMORY))
+
+# Load your content (long-term "knowledge")
+base_dir = os.path.dirname(os.path.abspath(__file__))
+file_path = os.path.join(base_dir, "my_content.txt")
+
+def resource_path(relative_path):
+    """Prefer the .exe folder, fallback to PyInstaller temp folder."""
+    if hasattr(sys, "_MEIPASS"):
+        # When running as .exe, prefer the folder where the exe is located
+        base_path = os.path.dirname(sys.executable)
+    else:
+        base_path = os.path.abspath(".")
+    return os.path.join(base_path, relative_path)
+
+try:
+    with open(resource_path("my_content.txt"), "r", encoding="utf-8") as f:
+        custom_knowledge = f.read()
+except FileNotFoundError:
+    print(f"⚠️ Could not find my_content.txt at: {file_path}")
+    custom_knowledge = ""
 
 class Bot(commands.Bot):
 
     def __init__(self):
-        super().__init__(token=TWITCH_TOKEN, prefix="!", initial_channels=[TWITCH_CHANNEL])
-
-    async def event_ready(self):
-        print(f"Bot {TWITCH_NICK} is online in {TWITCH_CHANNEL}'s chat!")
-
-    async def event_message(self, message):
-        if message.author.name.lower() == TWITCH_NICK.lower():
-            return  # ignore itself
-
-        content = message.content.strip()
-
-        # Check if it's an @mention or a command
-        mentioned = f"@{TWITCH_NICK.lower()}" in content.lower()
-        is_command = content.lower().startswith("!askbot")
-
-        if not (mentioned or is_command):
-            return  # ignore everything else
-
-        print(f"{message.author.name} triggered the bot: {content}")
-
-        # Clean up input (remove mention or command)
-        clean_text = content
-        clean_text = clean_text.replace(f"@{TWITCH_NICK}", "").strip()
-        if is_command:
-            clean_text = clean_text[len("!askbot"):].strip()
-
-        # Encode user input
-        input_ids = tokenizer.encode(clean_text + tokenizer.eos_token, return_tensors="pt")
-
-        global chat_history
-        if chat_history:
-            bot_input_ids = torch.cat([chat_history, input_ids], dim=-1)
-        else:
-            bot_input_ids = input_ids
-
-        # Generate reply
-        output_ids = model.generate(
-            bot_input_ids,
-            max_length=200,
-            pad_token_id=tokenizer.eos_token_id,
-            do_sample=True,
-            top_k=50,
-            top_p=0.95,
-            temperature=0.8
+        super().__init__(
+            token=TWITCH_TOKEN,
+            prefix=PREFIX,
+            initial_channels=[CHANNEL]
         )
 
-        chat_history = output_ids
-        reply = tokenizer.decode(output_ids[:, bot_input_ids.shape[-1]:][0], skip_special_tokens=True)
+    async def event_ready(self):
+        print(f"✅ Logged in as {self.nick}")
+        print(f"✅ Joined channels: {self.connected_channels}")
 
-        # Reply to user
-        await message.channel.send(f"@{message.author.name} {reply}")
+    async def event_message(self, message):
+        if message.echo:
+            return
+
+        print(f"[{message.channel.name}] {message.author.name}: {message.content}")
+        await self.handle_commands(message)
+
+    @commands.command()
+    async def ping(self, ctx):
+        await ctx.send(f"Pong {ctx.author.name}!")
+
+    @commands.command()
+    async def ask(self, ctx):
+        """Ask the AI a question"""
+        prompt = ctx.message.content[len("!ask "):].strip()
+        if not prompt:
+            await ctx.send("⚠️ Usage: !ask <your question>")
+            return
+
+        await ctx.send("EleGPT esta pensando...")
+
+        today = datetime.now().strftime("%d %B %Y")
+
+        # System message includes real date + channel context
+        system_message = (
+            f"You are a helpful assistant answering in English or Spanish. "
+            f"Today's real date is {today}. Always use this date when asked about 'today'. "
+            f"You are currently chatting in the Twitch channel '{ctx.channel.name}', "
+            f"and the streamer is '{CHANNEL}'. "
+            f"Keep context from prior exchanges if relevant."
+        )
+
+        # Add custom knowledge as if it’s a special "assistant note"
+        knowledge_message = {
+            "role": "system",
+            "content": (
+                f"Here is additional long-term knowledge about the streamer and channel: "
+                f"{custom_knowledge}"
+            )
+        }
+
+        # Build conversation with memory
+        conversation = [{"role": "system", "content": system_message}]
+        conversation.append(knowledge_message)
+        conversation.extend(memory[ctx.channel.name])
+        conversation.append({"role": "user", "content": prompt})
+
+        try:
+            start_time = time.time()
+
+            response = client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=conversation,
+                timeout=30
+            )
+
+            elapsed = time.time() - start_time
+            logging.info(f"✅ OpenAI responded in {elapsed:.2f}s")
+
+            answer = response.choices[0].message.content.strip()
+
+            # Update memory
+            memory[ctx.channel.name].append({"role": "user", "content": prompt})
+            memory[ctx.channel.name].append({"role": "assistant", "content": answer})
+
+            twitch_limit = 500
+
+            # Split the answer in bits so that the full message of the bot is shown
+            if (len(answer) > twitch_limit):
+                await ctx.send(answer[:twitch_limit])
+                await ctx.send(answer[twitch_limit:])
+            else:
+                await ctx.send(answer)  # Twitch limit
+
+        except APITimeoutError:
+            elapsed = time.time() - start_time
+            logging.error(f"❌ OpenAI timed out after {elapsed:.2f}s")
+            await ctx.send("⚠️ Error: OpenAI API timed out.")
+
+        except APIError as e:
+            elapsed = time.time() - start_time
+            logging.error(f"❌ OpenAI API error after {elapsed:.2f}s: {e}")
+            await ctx.send("⚠️ Error: OpenAI API failed.")
+
+        except Exception as e:
+            logging.error(f"❌ Twitch or network error: {e}")
+            await ctx.send("⚠️ Error: Twitch or network issue.")
+
 
 if __name__ == "__main__":
     bot = Bot()
